@@ -128,17 +128,17 @@ graph TB
 
 | # | 文档 | 你会了解到 |
 |---|------|-----------|
-| 1 | [概述](./docs/01-overview.md) | Claude Code 解决什么问题、技术选型背后的思考、整体架构 |
-| 2 | [系统主循环](./docs/02-agent-loop.md) | Agent 是怎么"思考-行动-观察"循环的，怎么处理中断和恢复 |
-| 3 | [上下文工程](./docs/03-context-engineering.md) | 怎么在有限的上下文窗口里塞下最有用的信息，压缩策略的全部细节 |
-| 4 | [工具系统](./docs/04-tool-system.md) | 66 个工具怎么注册、调度、并发控制，怎么接入第三方工具 |
-| 5 | [代码编辑策略](./docs/05-code-editing-strategy.md) | 为什么选择"搜索替换"而不是"整文件重写"，怎么保证编辑安全 |
-| 6 | [权限与安全](./docs/06-permission-security.md) | 5 层安全体系的完整实现，Bash 命令的 23 项安全检查 |
-| 7 | [用户体验设计](./docs/07-user-experience.md) | 为什么用 React 写终端 UI，流式输出的实现，终端交互细节 |
-| 8 | [最小必要组件](./docs/08-minimal-components.md) | 造一个 coding agent 最少需要哪些模块，从 500 行到 50 万行的演进路线 |
-| 9 | [Hooks 与可扩展性](./docs/09-hooks-extensibility.md) | 23 种 Hook 事件，怎么在不改源码的前提下定制 Claude Code 的行为 |
-| 10 | [多 Agent 架构](./docs/10-multi-agent.md) | 子 Agent、协调器、Swarm 三种模式的设计取舍 |
-| 11 | [记忆与技能系统](./docs/11-memory-skills.md) | AI 怎么"记住"你的偏好和项目上下文，跨会话学习的实现 |
+| 1 | [概述](./docs/01-overview.md) | 技术选型背后的思考（为什么 Bun/React/Zod）、6 条核心设计原则、9 阶段 235ms 启动流程、数据流全景 |
+| 2 | [系统主循环](./docs/02-agent-loop.md) | Agent 循环的双层架构、7 种 Continue Sites 故障恢复、工具预执行、StreamingToolExecutor 并发机制 |
+| 3 | [上下文工程](./docs/03-context-engineering.md) | 4 级压缩流水线完整细节、压缩后自动恢复机制（5 文件 + 技能重激活）、提示词缓存策略与缓存断裂检测 |
+| 4 | [工具系统](./docs/04-tool-system.md) | 66 个工具的注册与并发控制、MCP 7 种传输详解、连接状态机、OAuth 2.0 + PKCE 认证流程 |
+| 5 | [代码编辑策略](./docs/05-code-editing-strategy.md) | search-and-replace 为什么比整文件重写更好、唯一性约束与抗幻觉设计、编辑前强制读取的代码级实现 |
+| 6 | [权限与安全](./docs/06-permission-security.md) | 5 层纵深防御体系、tree-sitter AST 分析 + 23 项安全检查、竞速确认机制与 200ms 防误触 |
+| 7 | [用户体验设计](./docs/07-user-experience.md) | 自研 Ink 渲染器架构、Yoga Flexbox 布局、虚拟滚动与对象池优化、Vim 模式 |
+| 8 | [最小必要组件](./docs/08-minimal-components.md) | 7 个最小必要组件框架、最小实现 vs 生产级实现的逐项对照、从 500 行到 50 万行的演进路线 |
+| 9 | [Hooks 与可扩展性](./docs/09-hooks-extensibility.md) | 23+ Hook 事件全景、5 种 Hook 类型、6 阶段执行管道、PermissionRequest 4 种能力、信任模型与安全 |
+| 10 | [多 Agent 架构](./docs/10-multi-agent.md) | 子 Agent 4 种执行模式与 Worktree 隔离、协调器纯编排设计、Swarm 3 种执行后端与信箱通信 |
+| 11 | [记忆与技能系统](./docs/11-memory-skills.md) | 4 种记忆类型与 Sonnet 语义召回、异步预取机制、技能 5 层优先级加载、懒加载与多层提示词替换 |
 
 ## 谁应该读这个？
 
