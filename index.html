@@ -20,9 +20,6 @@
     .markdown-section table { display: table; width: 100%; }
     .cover-main { max-width: 600px; }
     .cover-main blockquote { font-size: 1em; color: #666; }
-    /* Mermaid 容器允许横向滚动 */
-    .mermaid-wrapper { overflow-x: auto; margin: 1em 0; }
-    .mermaid-wrapper svg { max-width: none; }
   </style>
 </head>
 <body>
@@ -50,7 +47,7 @@
         renderer: {
           code(code, lang) {
             if (lang === 'mermaid') {
-              return '<div class="mermaid-wrapper"><pre class="mermaid">' + code + '</pre></div>';
+              return '<div class="mermaid">' + code + '</div>';
             }
             return this.origin.code.apply(this, arguments);
           }
@@ -67,25 +64,26 @@
   <!-- Mermaid -->
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <script>
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'default',
-      securityLevel: 'loose',
-      flowchart: { htmlLabels: true, useMaxWidth: false },
-    });
+    mermaid.initialize({ startOnLoad: false, theme: 'default' });
+    // Hook into Docsify lifecycle to render mermaid after each page load
     window.$docsify.plugins = [
       function(hook) {
+        hook.afterEach(function(html) {
+          return html;
+        });
         hook.doneEach(function() {
-          document.querySelectorAll('pre.mermaid').forEach(function(el) {
+          document.querySelectorAll('.mermaid').forEach(function(el) {
             if (el.getAttribute('data-processed')) return;
-            var code = el.textContent.trim();
+            var code = el.textContent;
             var id = 'mermaid-' + Math.random().toString(36).substr(2, 9);
-            mermaid.render(id, code).then(function(result) {
-              el.innerHTML = result.svg;
-              el.setAttribute('data-processed', 'true');
-            }).catch(function(e) {
+            try {
+              mermaid.render(id, code).then(function(result) {
+                el.innerHTML = result.svg;
+                el.setAttribute('data-processed', 'true');
+              });
+            } catch (e) {
               console.warn('Mermaid render error:', e);
-            });
+            }
           });
         });
       }

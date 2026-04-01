@@ -18,7 +18,7 @@ Anthropic 开源（x）了这份源码。**但 50 万行代码，从哪里开始
 
 - **[claude-code-from-scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — 从零实现 Claude Code 核心功能的最小化实现与分步教程（每一步实现都有源码的reference），我和Claude Code用1300行代码实现了一个minimal的Claude Code，遵循了其开源代码中的设计哲学和实现方案，但是又是最小化的。
 
-<img width="2138" height="2146" alt="image" src="https://github.com/user-attachments/assets/30d6fd4c-fd55-4a17-b9ec-720ab01e1c18" />
+<img alt="架构总览" src="./assets/architecture.png" width="800" />
 
 ## 更新记录
 

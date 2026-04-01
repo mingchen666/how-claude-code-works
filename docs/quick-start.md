@@ -246,25 +246,26 @@ Claude Code 的跨会话学习能力依赖文件化记忆系统（`~/.claude/mem
 
 ```mermaid
 graph TB
-    User[用户] --> REPL[REPL 终端UI]
-    REPL --> QE[QueryEngine]
-    QE --> Loop[query 循环]
+    User[用户] --> REPL[REPL 终端UI<br/>React/Ink 自研渲染器]
+    REPL --> QE[QueryEngine<br/>会话管理]
+    QE --> Loop[query 循环<br/>async generator]
 
-    Loop --> Compress[4级压缩]
-    Loop --> API[Anthropic API]
+    Loop --> Compress[4级压缩<br/>Snip→MC→CC→AC]
+    Loop --> API[Anthropic API<br/>流式响应+缓存]
     Loop --> Tools[66+ 工具]
-    Loop --> Memory[记忆系统]
-    Loop --> Skills[技能系统]
-    Loop --> Hooks[23+ Hooks]
 
-    Tools --> Read[FileRead / Grep]
-    Tools --> Edit[FileEdit]
-    Tools --> Bash[BashTool]
-    Tools --> Agent[AgentTool]
-    Tools --> MCP[MCP 桥接]
+    Tools --> Read[FileRead<br/>Grep/Glob]
+    Tools --> Edit[FileEdit<br/>search-replace]
+    Tools --> Bash[BashTool<br/>7层安全]
+    Tools --> Agent[AgentTool<br/>子Agent/协调器/Swarm]
+    Tools --> MCP[MCP桥接<br/>7种传输+OAuth]
 
-    Bash --> Security[安全验证]
-    Security --> Perm[权限系统]
+    Bash --> Security[安全验证<br/>AST + 23项检查]
+    Security --> Perm[权限系统<br/>规则+分类器+Hook]
+
+    Loop --> Memory[记忆系统<br/>4类型+Sonnet召回]
+    Loop --> Skills[技能系统<br/>5层优先级+懒加载]
+    Loop --> Hooks[23+ Hook事件<br/>5种类型+6阶段管道]
 
     style Loop fill:#e8f5e9
     style Security fill:#ffebee
