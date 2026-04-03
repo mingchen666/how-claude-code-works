@@ -6,7 +6,7 @@
 [![GitHub forks](https://img.shields.io/github/forks/Windy3f3f3f3f/how-claude-code-works?style=flat-square&logo=github)](https://github.com/Windy3f3f3f3f/how-claude-code-works/fork)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![TypeScript](https://img.shields.io/badge/Source-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://github.com/anthropics/claude-code)
-[![Docs](https://img.shields.io/badge/Docs-12_chapters-orange?style=flat-square)](#deep-dive-topics)
+[![Docs](https://img.shields.io/badge/Docs-13_chapters-orange?style=flat-square)](#deep-dive-topics)
 
 > Want to build one yourself? Check out the companion project **[Claude Code From Scratch](https://github.com/Windy3f3f3f3f/claude-code-from-scratch)** — ~3000 lines of TypeScript, 11 step-by-step tutorial chapters, build your own Claude Code from scratch
 
@@ -18,7 +18,7 @@ Anthropic open-sourced (sort of) this source code. **But with 500,000 lines of c
 
 This is also why I created this project. I faced the same problem of not being able to read such a massive codebase, and my solution was to read it together with Claude Code, having it write documentation to help me understand the source code. At the same time, I wanted to document this process, which resulted in this project.
 
-Together with Claude Code, working overtime, we distilled **12 topic-specific documents** (totaling 338,000 characters) from the source code, covering every key design decision from the core loop to security defenses. Whether you want to build your own AI Agent or want to understand and use Claude Code more deeply, this is the shortest path (probably? Even if it's not the shortest, I'll keep updating this project).
+Together with Claude Code, working overtime, we distilled **13 topic-specific documents** from the source code, covering every key design decision from the core loop to security defenses. Whether you want to build your own AI Agent or want to understand and use Claude Code more deeply, this is the shortest path (probably? Even if it's not the shortest, I'll keep updating this project).
 
 ## System Architecture
 
@@ -134,6 +134,7 @@ To prevent conflicts from multiple Agents modifying the same file simultaneously
 | 7 | [Multi-Agent Architecture](/en/docs/07-multi-agent.md) | Sub-Agent 4 execution modes and Worktree isolation, coordinator pure orchestration design, Swarm 3 execution backends and mailbox communication |
 | 8 | [Memory System](/en/docs/08-memory-system.md) | 4 memory types and closed taxonomy, Sonnet semantic recall and async prefetch, background memory extraction Agent, memory drift defense, team memory |
 | 9 | [Skills System](/en/docs/09-skills-system.md) | 6-layer skill sources and priority, lazy loading and token budget allocation, Inline/Fork dual execution modes, whitelist permission model, skill retention after compression |
+| 10 | [Plan Mode](/en/docs/10-plan-mode.md) | Two entry paths, 5-phase and iterative dual workflows, attachment throttling mechanism, Phase 4 four experimental variants, plan file management and recovery, approval and permission restoration |
 | 11 | [Permissions & Security](/en/docs/11-permission-security.md) | 5-layer defense-in-depth system, tree-sitter AST analysis + 23 security checks, race confirmation mechanism and 200ms anti-misclick |
 | 12 | [User Experience Design](/en/docs/12-user-experience.md) | Custom Ink renderer architecture, Yoga Flexbox layout, virtual scrolling and object pool optimization, Vim mode |
 | 13 | [Minimal Essential Components](/en/docs/13-minimal-components.md) | 7 minimal essential component framework, item-by-item comparison of minimal vs production implementation, evolution path from 500 lines to 500,000 lines |
