@@ -12,13 +12,13 @@
 
 ---
 
-Claude Code is the most widely used AI coding Agent today, and in my opinion the best AI coding tool available (I've been using Claude Code for a year). It can understand entire code repositories, autonomously execute multi-step programming tasks, and safely run commands — all powered by the engineering wisdom distilled in **500,000+ lines of TypeScript source code**.
+Claude Code is the most widely used AI coding Agent today, and in our opinion the best AI coding tool available. It can understand entire code repositories, autonomously execute multi-step programming tasks, and safely run commands — all powered by the engineering wisdom distilled in **500,000+ lines of TypeScript source code**.
 
 Anthropic open-sourced (sort of) this source code. **But with 500,000 lines of code, where do you even start reading?**
 
-This is also why I created this project. I faced the same problem of not being able to read such a massive codebase, and my solution was to read it together with Claude Code, having it write documentation to help me understand the source code. At the same time, I wanted to document this process, which resulted in this project.
+This is why we created this project. We both faced the same problem of not being able to read such a massive codebase, and our solution was to read it together with Claude Code, having it write documentation to help us understand the source code. At the same time, we wanted to document this process, which resulted in this project.
 
-Together with Claude Code, working overtime, we distilled **13 topic-specific documents** from the source code, covering every key design decision from the core loop to security defenses. Whether you want to build your own AI Agent or want to understand and use Claude Code more deeply, this is the shortest path (probably? Even if it's not the shortest, I'll keep updating this project).
+Together with Claude Code, working overtime, we distilled **13 topic-specific documents** from the source code, covering every key design decision from the core loop to security defenses. Whether you want to build your own AI Agent or want to understand and use Claude Code more deeply, this is the shortest path (probably? Even if it's not the shortest, we'll keep updating this project).
 
 ## System Architecture
 
