@@ -305,7 +305,107 @@ Terminal space is limited (approximately 10 tasks can be displayed at most). `Ta
 
 Tasks exceeding the display limit are replaced with a summary: "... +2 in progress, 3 pending, 1 completed."
 
-## 15.4 Multi-Agent Coordination
+## 15.4 Context Injection: How Tasks Enter the LLM's View
+
+Once tasks are created, they live on disk — but the LLM can't see disk files. How does task state become part of the model's input? The answer is **two parallel paths**: tool call results + periodic reminder injection.
+
+### Path 1: Tool Call Results (Active Retrieval)
+
+When the model calls `TaskCreate`, `TaskList`, `TaskGet`, or `TaskUpdate`, the tool execution return value is fed back into the conversation context as a `tool_result` message. For example, `TaskList` returns:
+
+```
+#1 [completed] Set up database schema
+#2 [in_progress] Implement API endpoints (alice)
+#3 [pending] Write integration tests [blocked by #2]
+```
+
+This is the most direct path — the model actively queries, the system returns the latest state. But the problem is: **what if the model forgets the task system exists?**
+
+### Path 2: Periodic Reminders (Passive Injection)
+
+This is the more elegant design. Claude Code's Attachment system automatically injects task reminders into the conversation at appropriate moments:
+
+```typescript
+// src/utils/attachments.ts
+export const TODO_REMINDER_CONFIG = {
+  TURNS_SINCE_WRITE: 10,     // 10 turns since last TaskCreate/TaskUpdate
+  TURNS_BETWEEN_REMINDERS: 10, // At least 10 turns between reminders
+}
+```
+
+**Trigger logic**: The system scans backward from the end of conversation history, counting:
+1. How many assistant turns have passed since the last `TaskCreate` or `TaskUpdate` usage
+2. How many assistant turns have passed since the last task reminder was shown
+
+When both conditions are met (≥10 turns), the current task list is loaded from disk and an injection message is generated.
+
+**Injection format**: Not placed in the system prompt, but inserted into the conversation flow as a user message wrapped in `<system-reminder>` tags:
+
+```typescript
+// src/utils/messages.ts
+case 'task_reminder': {
+  const taskItems = attachment.content
+    .map(task => `#${task.id}. [${task.status}] ${task.subject}`)
+    .join('\n')
+
+  let message = `The task tools haven't been used recently. If you're working on
+tasks that would benefit from tracking progress, consider using TaskCreate to add
+new tasks and TaskUpdate to update task status...`
+
+  if (taskItems.length > 0) {
+    message += `\n\nHere are the existing tasks:\n\n${taskItems}`
+  }
+
+  return wrapMessagesInSystemReminder([
+    createUserMessage({ content: message, isMeta: true })
+  ])
+}
+```
+
+The injected message is marked with `isMeta: true`, meaning it's system metadata rather than user input — the model is explicitly told "do not mention this reminder to the user."
+
+### Why Not in the System Prompt?
+
+An intuitive approach would be to put the task list in the system prompt, including the latest task state with every API call. But this has two problems:
+
+1. **Cache invalidation** — The system prompt is the part of the Claude API that can be cached. If you stuff a changing task list into it every time, prompt cache would frequently invalidate, increasing token costs and latency
+2. **Excessive noise** — Not every conversation turn needs to see the task list. The Attachment approach enables on-demand injection, only reminding the model when it "forgets" about tasks
+
+### Why Not Every Turn?
+
+The 10-turn interval is a deliberate trade-off:
+
+- **Too frequent** (e.g., every turn) → Wastes tokens, model may start ignoring repetitive reminders
+- **Too sparse** (e.g., 50 turns) → Model may go long stretches without updating task status
+- **10 turns** strikes a reasonable balance — enough to maintain task awareness during complex work, without becoming noise
+
+### Scenarios Where Reminders Are Skipped
+
+Not all situations trigger reminders:
+
+- **When `SendUserMessage` tool is present** (Brief mode) — The primary communication channel is SendUserMessage; task reminders would conflict with the workflow
+- **When `TaskUpdate` is not in the tool list** — The model has no ability to update tasks, so reminders serve no purpose
+- **Ant internal users** — Different workflow
+
+### Complete Context Flow
+
+```
+Task data (~/.claude/tasks/*.json)
+       │
+       ├──→ Tool call results (TaskList/TaskGet)
+       │      → tool_result message → directly enters conversation context
+       │
+       └──→ Periodic reminders (checked every 10 turns)
+              → Attachment system
+              → normalizeAttachmentForAPI()
+              → user message wrapped in <system-reminder>
+              → merged with adjacent user messages
+              → enters the messages array of the API request
+```
+
+The two paths are complementary: tool calls provide on-demand precise information, while periodic reminders prevent the model from losing task context during extended work sessions.
+
+## 15.5 Multi-Agent Coordination
 
 > For more details on multi-Agent architecture, see [Chapter 7: Multi-Agent Architecture](07-multi-agent.md).
 
@@ -391,7 +491,7 @@ export async function unassignTeammateTasks(taskListId, agentId) {
 
 This prevents "zombie tasks" — if an Agent crashes or is terminated, the tasks it was working on won't be stuck in `in_progress` forever.
 
-## 15.5 Verification Nudge
+## 15.6 Verification Nudge
 
 This is a clever quality assurance mechanism:
 
@@ -413,7 +513,7 @@ if (allTasksCompleted && totalTasks >= 3 && !hasVerificationTask) {
 
 This feature is double-gated by feature flags (`VERIFICATION_AGENT` + `tengu_hive_evidence`), marking it as an experimental feature under gradual rollout.
 
-## 15.6 Hook Integration
+## 15.7 Hook Integration
 
 > For more details on the Hook system, see [Chapter 6: Hooks and Extensibility](06-hooks-extensibility.md).
 
@@ -431,7 +531,7 @@ The task system triggers Hooks at two lifecycle points:
 
 If a `TaskCreated` Hook returns a blocking error, the system **rolls back** — deleting the just-created task file and returning the error message to the model.
 
-## 15.7 System Prompt Guidance for Tasks
+## 15.8 System Prompt Guidance for Tasks
 
 ### Conditional Enablement
 
@@ -484,5 +584,6 @@ Claude Code's task system may look like a simple to-do list, but it is actually 
 | Bidirectional dependency tracking | Fast determination of task claimability while displaying blocking relationships |
 | Singleton Store | Avoids watcher churn caused by Spinner mount/unmount cycles |
 | Atomic claiming (directory-level lock) | Prevents race conditions where multiple Agents pass busy checks simultaneously |
+| Periodic reminder injection (not system prompt) | Avoids prompt cache invalidation, awakens model's task awareness on demand |
 | Verification nudge | Prevents self-verification by Agents, encourages independent verification |
 | 5-second delay before hiding | Gives users a time window to confirm everything is complete |
