@@ -148,7 +148,9 @@ async call(_input, context) {
 
 ### 10.4.1 附件的节流机制
 
-不是每轮都注入完整指令——那会浪费大量 token。`src/utils/attachments.ts:1189-1242` 实现了一套精细的节流逻辑：
+不是每轮都注入完整指令——那会浪费大量 token。Plan 模式的系统消息本质上是**模型行为的防护栏**（"你现在只能读不能写"），但如果每轮都重复完整指令，不仅浪费 token，还可能导致模型对这些指令产生"疲劳"——过于频繁的重复提醒反而削弱指令的效力。因此 Claude Code 采用了**渐进式提醒策略**：首轮提供完整上下文建立规则意识，中间若干轮信任模型的短期记忆，然后定期用轻量提醒刷新模型对当前模式的认知。
+
+`src/utils/attachments.ts:1189-1242` 实现了这套节流逻辑的具体规则：
 
 | 轮次 | 注入内容 | 原因 |
 |------|---------|------|
@@ -297,7 +299,9 @@ Slug 在会话内缓存（`planSlugCache: Map<SessionId, string>`），确保同
 
 ### 10.5.2 Resume 与 Fork
 
-当用户恢复之前的会话时，需要找回对应的计划文件。`copyPlanForResume()`（`src/utils/plans.ts:164-230`）的恢复策略是分层的：
+当用户恢复之前的会话时，需要找回对应的计划文件。之所以需要多达 5 层恢复策略，根本原因在于**本地会话和远程会话（CCR）的文件持久化能力完全不同**：本地用户的计划文件安全地存储在磁盘上，恢复很简单；但远程用户的 pod 随时可能被回收，文件可能已经不存在，必须从 transcript 中的各种位置尝试恢复。
+
+`copyPlanForResume()`（`src/utils/plans.ts:164-230`）的恢复策略是分层的：
 
 ```
 1. 直接读取文件        → 文件还在磁盘上（本地会话的常见情况）
@@ -307,7 +311,7 @@ Slug 在会话内缓存（`planSlugCache: Map<SessionId, string>`），确保同
 5. plan_file_reference → 从 auto-compact 创建的附件中提取
 ```
 
-为什么需要这么多恢复策略？因为**远程会话（CCR）的文件不持久化**。本地用户的计划文件安全地躺在 `~/.claude/plans/` 里，但远程用户的 pod 随时可能被回收。所以 Claude Code 在每次 `normalizeToolInput()` 时都会调用 `persistFileSnapshotIfRemote()`，将计划内容作为 `file_snapshot` 系统消息写入 transcript——这是唯一可靠的持久化渠道。
+为了应对远程场景，Claude Code 在每次 `normalizeToolInput()` 时都会调用 `persistFileSnapshotIfRemote()`，将计划内容作为 `file_snapshot` 系统消息写入 transcript——这是远程会话中唯一可靠的持久化渠道。
 
 Fork 会话（`copyPlanForFork()`，`src/utils/plans.ts:239-264`）更简单但有一个关键细节：**生成新的 slug**。如果复用原始 slug，原始会话和 fork 会话会写入同一个文件——导致互相覆盖。
 
@@ -337,7 +341,13 @@ async validateInput(_input, { getAppState, options }) {
 }
 ```
 
-为什么还需要这个检查？因为**模型有时会"忘记"自己已经退出了 Plan 模式**（尤其在上下文被压缩后），然后再次调用 `ExitPlanMode`。这个检查避免了重复退出导致的状态混乱。
+为什么还需要这个检查？因为**模型有时会"忘记"自己已经退出了 Plan 模式**，然后再次调用 `ExitPlanMode`。这种"失忆"主要有三个原因：
+
+1. **上下文压缩（Compact）清除了关键信号**：早期的 ExitPlanMode 成功消息在压缩后可能被丢弃，模型看不到"已经退出"的证据
+2. **Deferred tool 列表的误导**：模型在工具列表中仍然看到 `ExitPlanMode` 可用，容易误认为自己还在 Plan 模式中
+3. **模式状态缺乏显式标记**：当前模式信息主要通过系统附件传递，如果附件因节流未注入，模型可能产生状态混淆
+
+这个检查避免了重复退出导致的状态混乱。
 
 ### 10.6.2 用户审批
 

@@ -53,6 +53,23 @@ IMPORTANT: You must NEVER generate or guess URLs for the user unless you are
 confident that the URLs are for helping the user with programming.`
 ```
 
+但这段代码只展示了默认情况。实际上，这句身份定义是**条件化的**——当用户配置了 Output Style 时，表述会动态调整：
+
+```typescript
+// src/constants/prompts.ts — getSimpleIntroSection()
+function getSimpleIntroSection(outputStyleConfig: OutputStyleConfig | null): string {
+  return `
+You are an interactive agent that helps users ${
+    outputStyleConfig !== null
+      ? 'according to your "Output Style" below, which describes how you should respond to user queries.'
+      : 'with software engineering tasks.'
+  } Use the instructions below and the tools available to you to assist the user.
+  ...`
+}
+```
+
+当 Output Style 存在时，身份定义从"帮助用户完成软件工程任务"变为"按照 Output Style 描述的方式回应用户"。这意味着 Agent 的**核心使命会随配置动态切换**——从面向任务的编码助手变为面向风格的通用助手。这与后面 14.8 节提到的 `keepCodingInstructions` 标志配合：当 Output Style 接管时，Doing Tasks section 的编码原则可能被整体跳过，形成一个连贯的"人格切换"。
+
 三句话，三个层次：
 
 **第一句：身份定义**。注意用词是 **"interactive agent"** 而非 "assistant" 或 "AI"。这个选择是刻意的——"agent" 暗示主动性和工具使用能力，"interactive" 强调与用户的协作关系。相比之下，"assistant" 会让模型倾向于被动等待指令。
@@ -256,6 +273,31 @@ For broader codebase exploration, use the Agent tool with subagent_type=Explore.
 
 简单搜索 → 专用搜索工具 → 子 Agent 搜索——随着任务复杂度递增，使用更重量级的工具。这防止了两种极端：用子 Agent 做简单的文件查找（浪费资源），或者用 Grep 做需要多轮探索的复杂搜索（效果不好）。
 
+### 条件分支：REPL 模式与嵌入式搜索工具
+
+Using Tools section 并非对所有模式一成不变，源码中有两个重要的条件分支：
+
+**REPL 模式**（`isReplModeEnabled()`）：当 REPL 模式激活时，Read/Write/Edit/Glob/Grep/Bash/Agent 等工具被隐藏（由 REPL 自身的脚本环境提供），整个 Using Tools section 被精简为仅保留任务管理工具（TaskCreate/TodoWrite）的指导。"优先使用专用工具而非 Bash"的规则在 REPL 模式下无意义——REPL 自带的 prompt 会说明如何从脚本中调用这些工具。
+
+**嵌入式搜索工具**（`hasEmbeddedSearchTools()`）：Anthropic 内部构建版本将 `find`/`grep` 命令别名为内嵌的 `bfs`/`ugrep`，并移除了独立的 Glob/Grep 工具。此时，提示词中关于"用 Glob 替代 find、用 Grep 替代 rg"的映射条目会被跳过，因为 Bash 中的 `find`/`grep` 已经是优化过的版本。
+
+```typescript
+const embedded = hasEmbeddedSearchTools()
+const providedToolSubitems = [
+  `To read files use Read instead of cat, head, tail, or sed`,
+  `To edit files use Edit instead of sed or awk`,
+  `To create files use Write instead of cat with heredoc or echo redirection`,
+  // 仅当没有嵌入式搜索工具时才包含
+  ...(embedded ? [] : [
+    `To search for files use Glob instead of find or ls`,
+    `To search the content of files, use Grep instead of grep or rg`,
+  ]),
+  ...
+]
+```
+
+这两个条件分支体现了同一个设计原则：**提示词中只指导模型使用它实际拥有的工具**。推荐一个不存在的工具只会导致混乱。
+
 ## 14.6 内外有别：分层提示词变体
 
 Claude Code 的系统提示词并非对所有用户完全相同。通过 `process.env.USER_TYPE === 'ant'` 条件分支，内部用户（Anthropic 员工）和外部用户看到不同的提示词。
@@ -348,7 +390,7 @@ function getKnowledgeCutoff(modelId: string): string | null { ... }
 Only use emojis if the user explicitly requests it.
 ```
 
-为什么？Claude Code 运行在终端中——很多终端对 emoji 的渲染支持不佳，可能显示为方块或乱码。更重要的是，在专业的软件工程场景中，emoji 会让输出看起来不够严肃。但这条规则留了后门："unless the user explicitly requests it"——如果用户明确要求，说明他们的终端支持且个人偏好允许。
+为什么？原因有三层：（1）Claude Code 运行在终端中，很多终端对 emoji 的渲染支持不佳，可能显示为方块、乱码或宽度计算错误导致排版混乱；（2）在专业的软件工程场景中，emoji 会让输出看起来不够严肃，降低用户对工具的信任感；（3）模型在训练中学到了大量"友好助手"风格的 emoji 使用习惯，如果不明确禁止，几乎每条回复都会带上 emoji。但这条规则留了后门："unless the user explicitly requests it"——如果用户明确要求，说明他们的终端支持且个人偏好允许。
 
 ### file_path:line_number 格式
 
@@ -366,7 +408,7 @@ Do not use a colon before tool calls. Text like "Let me read the file:"
 followed by a read tool call should just be "Let me read the file." with a period.
 ```
 
-这条规则修复了一个 UI 问题：在 Claude Code 的界面中，工具调用可能不会直接显示在文本旁边。如果模型写"让我读取文件："后面跟一个工具调用，用户可能只看到一个以冒号结尾的悬空句子，感觉输出不完整。改用句号就自然得多。
+这条规则修复了一个 UI 问题：在 Claude Code 的界面中，工具调用会被渲染为独立的 UI 组件（如折叠面板），而非内联文本。如果模型写"让我读取文件："后面跟一个工具调用，用户看到的是一个以冒号结尾的悬空句子，下方是一个视觉上独立的工具调用卡片——冒号暗示后面还有内容要跟，但实际上后面是空的，造成"句子被截断"的错觉。改用句号则形成一个完整的陈述句，即使工具调用不可见或延迟出现，文本本身也是自洽的。这是一个典型的"提示词为 UI 渲染服务"的例子。
 
 ### GitHub 链接格式
 
@@ -378,6 +420,15 @@ format so they render as clickable links.
 在支持 GitHub 集成的终端中，`anthropics/claude-code#100` 会自动渲染为可点击的链接。这种格式也比完整 URL 更简洁易读。
 
 ## 14.8 条件复杂度：同一产品的多张面孔
+
+上一节（14.6）分析了**用户身份**（内部/外部）带来的提示词差异。但用户身份只是条件维度之一。系统提示词的最终形态由多个维度共同决定：
+
+- **用户身份**：内部用户 vs 外部用户（`USER_TYPE`）
+- **运行模式**：交互模式、Proactive 自治模式、REPL 模式、极简模式（`CLAUDE_CODE_SIMPLE`）
+- **配置选项**：Output Style、语言偏好、MCP 服务器
+- **功能开关**：Feature flags（`PROACTIVE`、`KAIROS`、`CACHED_MICROCOMPACT` 等）
+
+本节聚焦**运行模式**这一维度——它对系统提示词的影响最为剧烈，甚至会完全替换整个提示词结构。
 
 Claude Code 的系统提示词不是一个固定的字符串，而是一个**根据运行模式动态组装的模板**。
 
@@ -403,7 +454,7 @@ if (proactiveModule?.isProactiveActive()) {
 }
 ```
 
-注意差异：
+注意差异——交互模式的 7 个静态 section 被**完全替换**为一组不同的 section：
 
 | Section | 交互模式 | Proactive 模式 |
 |---------|---------|---------------|
@@ -411,8 +462,22 @@ if (proactiveModule?.isProactiveActive()) {
 | Doing Tasks | 完整的编码原则 | 无 |
 | Actions | 完整的风险框架 | 无 |
 | Using Tools | 详细工具指南 | 无 |
-| Tone/Efficiency | 语气和输出规范 | "Bias toward action" |
-| 自治指导 | 无 | 完整的 tick/sleep/pacing 系统 |
+| Tone/Efficiency | 语气和输出规范 | 无 |
+| System Reminders | 作为 System section 的一部分 | 独立 section：`<system-reminder>` 标签说明 + 自动摘要提示 |
+| Memory Prompt | 动态注入 | 动态注入（`loadMemoryPrompt()`） |
+| Env Info | 动态注入 | 动态注入（CWD、日期、平台等） |
+| Language | 动态注入 | 动态注入 |
+| MCP Instructions | 动态注入 | 条件注入（受 `isMcpInstructionsDeltaEnabled` 控制） |
+| Scratchpad | 动态注入 | 动态注入（临时文件目录指导） |
+| Function Result Clearing | 动态注入 | 独立 section：告知模型旧工具结果会被自动清理 |
+| Summarize Tool Results | 无独立 section | 独立 section：提醒模型及时记录重要工具结果 |
+| 自治指导 | 无 | 完整的 tick/sleep/pacing 系统（`getProactiveSection()`） |
+
+几个值得注意的设计选择：
+
+- **Function Result Clearing** 和 **Summarize Tool Results** 在交互模式下通过动态 section 注册机制按需加载，但在 Proactive 模式下被**硬编码**进提示词数组。这是因为自治 Agent 长时间运行，上下文膨胀更快，主动清理和摘要更为关键。
+- **Scratchpad Instructions** 为 Agent 提供一个会话级的临时目录，避免污染用户项目。对于长时间自治运行的 Proactive Agent，这尤其重要。
+- Proactive 模式完全移除了 Doing Tasks、Actions、Using Tools 等交互导向的 section，因为自治 Agent 不需要"检查用户确认"或"优先使用专用工具"——它的行为由 `getProactiveSection()` 中的 pacing/sleep/bias-toward-action 规则全权指导。
 
 Proactive Agent 有自己独特的行为指导：
 

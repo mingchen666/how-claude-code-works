@@ -37,6 +37,16 @@ graph LR
 
 这三种模式的复杂度递增，但共享同一套底层基础设施——`AgentTool` 工具、`ToolUseContext` 上下文隔离和 `<task-notification>` 结果通知。理解子 Agent 模式是理解后两种模式的基础。
 
+**选择多 Agent 模式的决策指南：**
+
+- 简单的独立子任务？ --> 子 Agent 模式（最简单的选择）
+- 需要子任务的输出作为后续输入？ --> 子 Agent 模式（同步，父 Agent 串行编排）
+- 需要多个 Worker 并行处理不同任务？
+  - 需要中央编排、综合结果？ --> Coordinator 模式
+  - Agent 之间对等协作、无中心？ --> Swarm 模式
+- 需要执行前审批计划？ --> Plan 模式（可与上述任何模式组合）
+- 不确定？ --> 从子 Agent 模式开始，复杂度不够时再升级
+
 ## 7.2 子 Agent 模式（AgentTool）
 
 这是最基础的多 Agent 模式。父 Agent 通过 [AgentTool](./04-tool-system.md) 派生子 Agent 执行独立任务。
@@ -168,7 +178,7 @@ flowchart TD
 
 #### 阶段 1：类型解析
 
-类型解析的核心逻辑在 `AgentTool.tsx:318-356`：
+类型解析的核心逻辑见 `AgentTool.tsx` 中的 `effectiveType` 决策段落：
 
 ```typescript
 // Fork subagent experiment routing:
@@ -832,6 +842,8 @@ Workers 可以在这个目录中自由读写文件（无需权限确认），用
 Scratchpad 提供了一个直接的旁路通道：Worker A 将详细发现写入文件，Worker B 直接读取——无需经过协调器的"理解和转述"。
 
 ## 7.5 Worker 结果传递
+
+子 Agent / Worker 完成任务后，结果如何安全、可靠地回到父级？这涉及两条截然不同的返回路径、通知去重机制，以及针对 prompt injection 的安全分类。
 
 ### 同步 vs 异步：两条返回路径
 

@@ -46,7 +46,7 @@ graph TB
 
 ## 2.3 QueryEngine：会话生命周期管理
 
-`src/QueryEngine.ts`（1,155 行）是对话的外壳。它的核心方法 `submitMessage()` 驱动一次完整的用户交互。
+`src/QueryEngine.ts`（1,295 行）是对话的外壳。它的核心方法 `submitMessage()` 驱动一次完整的用户交互。
 
 ### 完整配置参数
 
@@ -134,7 +134,7 @@ flowchart TD
 
 ## 2.4 query()：核心循环的实现
 
-`src/query.ts`（1,728 行）是 Claude Code 最复杂的单个模块，实现了一个**基于状态机的异步生成器循环**。
+`src/query.ts`（1,729 行）是 Claude Code 最复杂的单个模块，实现了一个**基于状态机的异步生成器循环**。
 
 ### 核心签名
 
@@ -254,7 +254,7 @@ const fullSystemPrompt = asSystemPrompt(
 
 **第三步：流式调用 + 工具并行执行**
 
-`callModel()` 返回一个 async generator，`StreamingToolExecutor` 在流式接收响应的同时就开始执行已完成的工具调用（详见 2.5 节）。
+`callModel()` 返回一个 async generator，`StreamingToolExecutor` 在流式接收响应的同时就开始执行已完成的工具调用（详见 2.4.1 节）。
 
 **第四步：记忆预取消费**
 
@@ -267,9 +267,9 @@ using pendingMemoryPrefetch = startRelevantMemoryPrefetch(
 
 `using` 是 TypeScript 的 Explicit Resource Management 语法——当 generator 退出时（无论正常返回还是异常），`pendingMemoryPrefetch` 的 `[Symbol.dispose]()` 会自动调用，用于发送遥测和清理资源。记忆预取在模型流式生成期间并行运行，通过 `settledAt` 守卫确保每轮只消费一次。
 
-## 2.5 流式处理与并行工具执行
+### 2.4.1 流式处理与并行工具执行
 
-Claude Code 的流式处理不是简单的"等 API 返回再显示"。它利用 `StreamingToolExecutor` 实现了**流式工具并行执行**：
+Claude Code 的流式处理不是简单的"等 API 返回再显示"。它利用 `StreamingToolExecutor` 实现了**流式工具并行执行**——在模型还在生成后续 token 时，已经完成解析的工具调用就被立即分发执行。这是 query() 循环内部的关键优化环节。
 
 ```
                     API 流式输出
@@ -293,36 +293,87 @@ Claude Code 的流式处理不是简单的"等 API 返回再显示"。它利用 
                 [==结果即时可用==]
 ```
 
-### StreamingToolExecutor 实现原理
+#### StreamingToolExecutor 实现原理
 
-`StreamingToolExecutor`（`src/services/tools/StreamingToolExecutor.ts`）的核心逻辑：
+`StreamingToolExecutor`（`src/services/tools/StreamingToolExecutor.ts`，531 行）的核心是一个带并发控制的工具执行队列。每个工具被追踪为 `queued → executing → completed → yielded` 四个状态：
 
-1. **`addToolUseBlock(block)`**：API 流式响应在解析到完整的 `tool_use` JSON block 时调用此方法。注意是"完整的 block"——不需要等整个 API 响应结束，一个 tool_use block 的 JSON 完成解析就可以分发执行
-2. **内部执行**：每个 block 被立即提交给 `runTools()` 执行。权限检查、输入校验、工具调用都在此时发生
-3. **`getCompletedResults()`**：在 API 流式响应结束后调用，收集所有已完成的工具执行结果。由于工具在流式期间就已经开始执行，大部分结果此时已经就绪
+```typescript
+// src/services/tools/StreamingToolExecutor.ts — 核心调度逻辑
+
+type ToolStatus = 'queued' | 'executing' | 'completed' | 'yielded'
+
+// 1. 流式响应中每解析完一个 tool_use block，立即入队并尝试执行
+addTool(block: ToolUseBlock, assistantMessage: AssistantMessage): void {
+  const isConcurrencySafe = toolDefinition.isConcurrencySafe(parsedInput.data)
+  this.tools.push({ id: block.id, block, status: 'queued', isConcurrencySafe, ... })
+  void this.processQueue()  // 立即尝试调度
+}
+
+// 2. 并发控制：concurrent-safe 工具可并行，非 concurrent 工具独占执行
+private canExecuteTool(isConcurrencySafe: boolean): boolean {
+  const executingTools = this.tools.filter(t => t.status === 'executing')
+  return executingTools.length === 0 ||
+    (isConcurrencySafe && executingTools.every(t => t.isConcurrencySafe))
+}
+
+// 3. 流式结束后，收割所有已完成结果（大部分此时已就绪）
+*getCompletedResults(): Generator<MessageUpdate, void> {
+  for (const tool of this.tools) {
+    if (tool.status === 'completed' && tool.results) {
+      tool.status = 'yielded'
+      for (const message of tool.results) yield { message, newContext: ... }
+    }
+  }
+}
+```
+
+关键设计细节：
+
+1. **`addTool(block)`**：API 流式响应在解析到完整的 `tool_use` JSON block 时调用此方法。注意是"完整的 block"——不需要等整个 API 响应结束，一个 tool_use block 的 JSON 完成解析就可以分发执行
+2. **并发安全分类**：每个工具通过 `isConcurrencySafe` 声明是否可以并行。读文件、搜索等只读操作标记为 concurrent-safe，可以同时执行；写文件、Bash 命令等标记为非 concurrent，必须独占执行
+3. **Bash 错误级联**：当一个 Bash 工具出错时，`siblingAbortController` 会取消所有正在并行执行的兄弟工具——因为 Bash 命令之间经常有隐式依赖（如 `mkdir` 失败后续命令就没意义了），但读文件/搜索等独立操作的失败不会触发级联
+4. **`getCompletedResults()` + `getRemainingResults()`**：前者非阻塞地收割已完成结果，后者异步等待剩余执行中的工具。两者配合实现了"流式期间即时收割 + 流式结束后等待尾部"的模式
 
 这种设计的效果是：在一个典型的 API 响应（5-30 秒的流式窗口）中，多个工具可以被分发和完成。到流式结束时，工具结果已经可用——消除了串行执行的瓶颈。
 
 ## 2.6 Feature Flag 条件加载
 
-`query.ts` 开头使用了 4 个 Feature Flag 条件加载模块：
+`query.ts` 使用了 **6 个** Feature Flag 条件加载模块，分散在文件头部的三个 `eslint-disable` 块中。其中前 4 个与上下文压缩和工具系统密切相关，是理解主循环的核心；后 2 个（`jobClassifier`、`taskSummaryModule`）分别服务于模板分类和后台会话摘要，属于辅助功能。
 
 ```typescript
-import { feature } from 'bun:bundle'
-
+// —— 第一组：上下文压缩相关 ——
 const reactiveCompact = feature('REACTIVE_COMPACT')
   ? (require('./services/compact/reactiveCompact.js') as typeof import('./services/compact/reactiveCompact.js'))
   : null
 const contextCollapse = feature('CONTEXT_COLLAPSE')
   ? (require('./services/contextCollapse/index.js') as typeof import('./services/contextCollapse/index.js'))
   : null
-const snipModule = feature('HISTORY_SNIP')
-  ? (require('./services/compact/snipCompact.js') as typeof import('./services/compact/snipCompact.js'))
-  : null
+
+// —— 第二组：技能搜索 & 模板分类 ——
 const skillPrefetch = feature('EXPERIMENTAL_SKILL_SEARCH')
   ? (require('./services/skillSearch/prefetch.js') as typeof import('./services/skillSearch/prefetch.js'))
   : null
+const jobClassifier = feature('TEMPLATES')
+  ? (require('./jobs/classifier.js') as typeof import('./jobs/classifier.js'))
+  : null
+
+// —— 第三组：历史剪裁 & 后台会话摘要 ——
+const snipModule = feature('HISTORY_SNIP')
+  ? (require('./services/compact/snipCompact.js') as typeof import('./services/compact/snipCompact.js'))
+  : null
+const taskSummaryModule = feature('BG_SESSIONS')
+  ? (require('./utils/taskSummary.js') as typeof import('./utils/taskSummary.js'))
+  : null
 ```
+
+| Feature Flag | 变量名 | 功能 |
+|---|---|---|
+| `REACTIVE_COMPACT` | `reactiveCompact` | PTL 错误时的反应式全量压缩 |
+| `CONTEXT_COLLAPSE` | `contextCollapse` | 投影式上下文折叠 |
+| `EXPERIMENTAL_SKILL_SEARCH` | `skillPrefetch` | 技能搜索预取 |
+| `TEMPLATES` | `jobClassifier` | 任务模板分类器 |
+| `HISTORY_SNIP` | `snipModule` | 历史消息 snip 剪裁 |
+| `BG_SESSIONS` | `taskSummaryModule` | 后台会话任务摘要生成 |
 
 这个模式有三个层次：
 1. **编译时消除**：`feature()` 在 Bun bundler 构建时被求值。外部构建中 `feature('REACTIVE_COMPACT')` 返回 `false`，整个 `require()` 分支被 tree-shaking

@@ -123,25 +123,6 @@ flowchart TD
 
 ## 8.3 存储架构
 
-### 存储格式
-
-每条记忆是独立的 Markdown 文件，带 YAML frontmatter：
-
-```markdown
----
-name: 简洁回复偏好
-description: 用户不希望在响应末尾看到总结
-type: feedback
----
-
-不要在每次响应末尾总结已完成的操作。
-
-**Why:** 用户明确表示可以自己阅读 diff。
-**How to apply:** 所有响应保持简洁，省略尾部总结。
-```
-
-关键设计：`description` 字段不仅是元数据，它是**召回系统的核心依据**。当 Sonnet 模型在选择相关记忆时，主要依赖 description 判断相关性，因此 description 必须足够具体——"用户偏好"太泛，"用户不希望在响应末尾看到总结"才够精确。
-
 ### 目录结构
 
 记忆文件存储在项目特定目录中：
@@ -168,6 +149,25 @@ type: feedback
 **安全决策：为什么 projectSettings 被排除？**
 
 `getAutoMemPathSetting()` 只从 user/managed settings 读取，**不**从 projectSettings 读取。原因是安全：projectSettings 来自项目的 `.claude/settings.json` 文件，它是被签入代码仓库的。一个恶意的仓库可以设置 `autoMemoryDirectory: "~/.ssh"`，让 Claude Code 的记忆写入操作（Edit/Write 工具）获得对用户 SSH 密钥目录的写访问权限。这与权限系统中"不信任项目级设置用于安全敏感路径"的原则一致。
+
+### 存储格式
+
+每条记忆是独立的 Markdown 文件，带 YAML frontmatter：
+
+```markdown
+---
+name: 简洁回复偏好
+description: 用户不希望在响应末尾看到总结
+type: feedback
+---
+
+不要在每次响应末尾总结已完成的操作。
+
+**Why:** 用户明确表示可以自己阅读 diff。
+**How to apply:** 所有响应保持简洁，省略尾部总结。
+```
+
+关键设计：`description` 字段不仅是元数据，它是**召回系统的核心依据**。当 Sonnet 模型在选择相关记忆时，主要依赖 description 判断相关性，因此 description 必须足够具体——"用户偏好"太泛，"用户不希望在响应末尾看到总结"才够精确。
 
 ### Git Worktree 共享
 
@@ -197,7 +197,12 @@ settings.json 中 autoMemoryEnabled       →  按配置
 
 ## 8.4 MEMORY.md：索引而非容器
 
-`MEMORY.md` 是记忆系统的**索引文件**，不是记忆容器。每个条目应为一行链接：
+`MEMORY.md` 是记忆系统的**入口点**（entrypoint），扮演两个角色：
+
+1. **索引**：列出所有可用的记忆文件及其简短描述，供模型快速定位相关记忆
+2. **快速检查**：每次会话启动时，MEMORY.md 的内容会通过 `getClaudeMds()` 自动加载到用户上下文中（与 CLAUDE.md 同一批次加载），让模型在第一个回合就知道有哪些记忆可用
+
+正因为 MEMORY.md 每次会话都完整加载，它必须保持紧凑——它是索引，不是记忆容器。每个条目应为一行链接：
 
 ```markdown
 - [用户角色](user_role.md) — 数据科学家，专注可观测性
@@ -262,7 +267,7 @@ export function truncateEntrypointContent(raw: string): EntrypointTruncation {
 
 ```mermaid
 flowchart TD
-    Input[用户输入 + 最近工具使用] --> Scan["1. scanMemoryFiles()<br/>扫描记忆目录<br/>只读每个文件前 30 行 frontmatter<br/>按 mtime 降序排列<br/>最多 200 个文件"]
+    Input[用户输入 + 最近工具使用] --> Scan["1. scanMemoryFiles()<br/>扫描记忆目录所有 .md 文件<br/>只读每个文件前 30 行 frontmatter<br/>按 mtime 降序排列<br/>保留最新 200 个"]
     Scan --> Format["2. formatMemoryManifest()<br/>格式化为清单：<br/>[type] filename (timestamp): description"]
     Format --> Eval["3. selectRelevantMemories()<br/>sideQuery() + Sonnet 模型<br/>输入：query + 清单 + recentTools<br/>输出：最多 5 个文件名"]
     Eval --> Filter["4. 过滤<br/>去除已展示的记忆(alreadySurfaced)<br/>验证文件名存在于已知集合"]
@@ -292,9 +297,11 @@ export async function scanMemoryFiles(memoryDir: string, signal: AbortSignal) {
     .filter(r => r.status === 'fulfilled')
     .map(r => r.value)
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, MAX_MEMORY_FILES)  // MAX_MEMORY_FILES = 200
+    .slice(0, MAX_MEMORY_FILES)  // 保留最新 200 个（MAX_MEMORY_FILES = 200）
 }
 ```
+
+注意 `MAX_MEMORY_FILES = 200` 不是扫描上限，而是**返回结果数限制**。`readdir` 会读取目录中所有 `.md` 文件，每个都读取 frontmatter 并获取 mtime，然后按修改时间降序排列，最后 `.slice(0, 200)` 只保留最新的 200 个。如果记忆目录中有 500 个文件，500 个都会被扫描，但只有最新的 200 个会参与后续的语义召回。
 
 **为什么这样更快？**
 
@@ -306,7 +313,7 @@ export async function scanMemoryFiles(memoryDir: string, signal: AbortSignal) {
 
 单次遍历方法是：
 1. `read()` 所有文件的前 30 行（`readFileInRange` 同时返回 mtime）→ N 次 syscall
-2. 排序并截取前 200
+2. 排序并保留最新 200 个
 3. 总计：N 次 syscall
 
 对常见场景（N ≤ 200），syscall 数量减半。代价是多读了一些最终被丢弃的文件的 frontmatter，但每个文件只读 30 行，开销极小。
@@ -439,25 +446,25 @@ sequenceDiagram
     end
 ```
 
-### 触发与互斥
+### 触发、互斥与重叠防护
 
-提取 Agent 在 `handleStopHooks` 中被触发——即主 Agent 完成响应（没有更多工具调用）时。但它不是每次都运行：
+提取 Agent 的运行受三层控制，确保既不遗漏也不重复：
 
-**互斥机制**：`hasMemoryWritesSince()` 检查主 Agent 是否在最近的消息范围内已经写入了记忆文件。如果主 Agent 已经主动保存了记忆（比如用户说"记住这个"，主 Agent 直接调用 Write 写入），提取 Agent 就**跳过**——避免对同一段对话产生重复记忆。
+**1. 触发时机**：提取 Agent 在 `handleStopHooks` 中被触发——即主 Agent 完成响应（没有更多工具调用）时。
 
-**回合节流**：`turnsSinceLastExtraction` 计数器控制提取频率。不是每个回合都需要提取——很多回合（如简单的问答）没有值得记忆的信息。
+**2. 频率控制**：不是每次回合结束都触发提取，有两道过滤：
+- **互斥检查**：`hasMemoryWritesSince()` 检查主 Agent 是否在最近的消息范围内已经写入了记忆文件。如果主 Agent 已经主动保存了记忆（比如用户说"记住这个"，主 Agent 直接调用 Write 写入），提取 Agent 就**跳过**——避免对同一段对话产生重复记忆。
+- **回合节流**：`turnsSinceLastExtraction` 计数器控制提取频率。很多回合（如简单的问答）没有值得记忆的信息，不需要每次都提取。
 
-### 重叠防护
-
-如果上一次提取还在运行时新的回合结束了，系统不会启动并发提取：
+**3. 并发防护**：如果上一次提取还在运行时新的回合结束了，系统不会启动并发提取，而是通过 `pendingContext` 暂存 + trailing run 机制处理：
 
 ```
-inProgress = true → 将新请求暂存为 pendingContext
+inProgress = true → 将新请求暂存为 pendingContext（后到的覆盖先到的）
 当前提取完成    → 检查 pendingContext，如果有则启动 trailing run
 trailing run    → 只处理自游标推进后的新消息
 ```
 
-这个设计确保：(1) 不会有两个提取 Agent 同时写入记忆目录（避免冲突）；(2) 不会遗漏任何对话内容。
+这个设计确保：(1) 不会有两个提取 Agent 同时写入记忆目录（避免冲突）；(2) 不会遗漏任何对话内容——即使提取来不及处理，最新的上下文会被暂存并在当前提取结束后立即处理。
 
 ### 工具权限：严格的写入白名单
 
@@ -589,15 +596,30 @@ Agent 记忆通过与主记忆相同的 `buildMemoryPrompt()` 函数构建，但
 
 ## 8.11 记忆注入对话的方式
 
-理解记忆如何到达模型的上下文窗口：
+记忆通过两条路径到达模型的上下文窗口——MEMORY.md 走系统提示词（每次会话必加载），召回的记忆走用户消息（按需注入）。理解这两条路径对于理解记忆系统的上下文开销至关重要。
 
-### MEMORY.md：系统提示词注入
+### MEMORY.md：用户上下文注入
 
-MEMORY.md 内容通过 `systemPromptSection('memory', () => loadMemoryPrompt())` 注入系统提示词。这意味着：
+MEMORY.md 的内容通过 `getMemoryFiles()` → `getClaudeMds()` 流程加载，与 CLAUDE.md 走同一条路径，最终作为用户上下文（`getUserContext()`）的一部分注入。系统提示词中还有一段独立的记忆行为指令，通过 `systemPromptSection('memory', () => loadMemoryPrompt())` 注入，包含四类型分类法、保存规则等。
 
-- 每次会话自动加载
-- 经过 `truncateEntrypointContent()` 截断
-- 位于系统提示词的动态部分
+这意味着：
+
+- 每次会话自动加载，无需模型主动请求
+- MEMORY.md 内容经过 `truncateEntrypointContent()` 截断（200 行 / 25KB）
+- 行为指令位于系统提示词中，MEMORY.md 内容位于用户上下文中
+
+实际注入到上下文中的 MEMORY.md 内容大致如下：
+
+```
+Contents of ~/.claude/projects/a1b2c3d4/memory/MEMORY.md (user's auto-memory, persists across conversations):
+
+- [用户角色](user_role.md) — 数据科学家，专注可观测性
+- [简洁回复偏好](feedback_terse.md) — 不要尾部总结
+- [合并冻结](project_freeze.md) — 2026-03-05 移动端发布冻结
+- [Bug 追踪](reference_linear.md) — 管道 Bug 在 Linear INGEST 项目
+```
+
+这段文本由 `getClaudeMds()` 拼接生成（`src/utils/claudemd.ts`），格式为 `Contents of {path}{description}:\n\n{content}`。`description` 部分根据文件类型不同而变化——MEMORY.md 对应的是 `(user's auto-memory, persists across conversations)`。
 
 ### 召回的记忆：用户消息注入
 
@@ -606,17 +628,42 @@ MEMORY.md 内容通过 `systemPromptSection('memory', () => loadMemoryPrompt())`
 ```typescript
 case 'relevant_memories': {
   return wrapMessagesInSystemReminder(
-    attachment.memories.map(m => createUserMessage({
-      content: `${memoryHeader(m.path, m.mtimeMs)}\n\n${m.content}`,
-      isMeta: true
-    }))
+    attachment.memories.map(m => {
+      const header = m.header ?? memoryHeader(m.path, m.mtimeMs)
+      return createUserMessage({
+        content: `${header}\n\n${m.content}`,
+        isMeta: true
+      })
+    })
   )
 }
 ```
 
-`memoryHeader()` 包含文件路径、修改时间的人类可读距离（如 "3 days ago"）、和新鲜度警告。记忆被包裹在 `<system-reminder>` 标签中，与其他上下文信息（如 Read/Grep 结果）归为同一组。
+`memoryHeader()` 根据记忆的新鲜度生成不同的头部（`src/utils/attachments.ts`）：
 
-`isMeta: true` 标记确保这些消息在 UI 中不作为用户消息显示，但模型能看到它们。
+- **新鲜记忆**（今天/昨天）：`Memory (saved today): ~/.claude/projects/.../feedback_terse.md:`
+- **过时记忆**（>1 天）：先输出新鲜度警告，再输出路径。例如：
+
+```
+This memory is 47 days old. Memories are point-in-time observations, not live state — claims about code behavior or file:line citations may be outdated. Verify against current code before asserting as fact.
+
+Memory: ~/.claude/projects/.../project_freeze.md:
+
+---
+name: 合并冻结
+description: 2026-03-05 合并冻结，移动端发布
+type: project
+---
+
+2026-03-05 后合并冻结，移动端 v3.2 发布。
+
+**Why:** 产品团队要求冻结期间不合并非紧急 PR。
+**How to apply:** 03-05 之后的 PR 推迟到下周合并。
+```
+
+记忆被包裹在 `<system-reminder>` 标签中（通过 `wrapMessagesInSystemReminder`），与其他上下文信息（如 Read/Grep 结果）归为同一组。
+
+`isMeta: true` 标记确保这些消息在 UI 中不作为用户消息显示，但模型能看到它们。这意味着用户不会被大量的记忆注入打扰，但模型的每个回合都能参考这些信息。
 
 ## 8.12 设计洞察
 

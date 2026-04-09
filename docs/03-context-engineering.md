@@ -277,6 +277,31 @@ let messagesForQuery = [...getMessagesAfterCompactBoundary(messages)]
 
 `normalizeMessagesForAPI()`（`src/utils/messages.ts`，约 200 行）是消息发送前的关键处理步骤。它解决了一个核心问题：**Claude Code 内部的消息格式和 API 要求的消息格式不完全一致**。
 
+```typescript
+// src/utils/messages.ts
+export function normalizeMessagesForAPI(
+  messages: Message[],
+  tools: Tools = [],
+): (UserMessage | AssistantMessage)[] {
+  const availableToolNames = new Set(tools.map(t => t.name))
+
+  // 1. 附件重排序 + 过滤虚拟消息
+  const reorderedMessages = reorderAttachmentsForAPI(messages)
+    .filter(m => !((m.type === 'user' || m.type === 'assistant') && m.isVirtual))
+
+  // 2. 构建错误→块类型映射（PDF太大、图片太大等）
+  const errorToBlockTypes: Record<string, Set<string>> = { ... }
+  const stripTargets = new Map<string, Set<string>>()  // userUUID → 需剥离的块类型
+
+  // 3-7. 遍历消息，逐条处理：
+  //   - 剥离 tool_reference、advisor blocks、错误媒体项
+  //   - 处理 thinking/signature 块
+  //   - 合并同 ID 的分裂 AssistantMessage
+  //   - 验证和修复 tool_use/tool_result 配对
+  ...
+}
+```
+
 下面是每个处理步骤及其解决的问题：
 
 **1. 附件重排序**（`reorderAttachmentsForAPI`）：附件消息在内部可能出现在任意位置，但 API 要求它们在语义上关联的消息之前。此步骤将附件消息向上冒泡，直到遇到 `tool_result` 或 `assistant` 消息为止。**如果不做这一步**，API 可能看到一个孤立的图片块，却不知道它与哪条消息相关。
@@ -321,7 +346,7 @@ flowchart TD
 1. **Tool Result Budget 最先**：纯本地操作，不调用 API。大结果写入磁盘，上下文只保留预览。零延迟、零成本。
 2. **Snip 释放最多**：直接从消息列表中移除冗余部分，释放大量 Token，可能使后续压缩不必要。
 3. **Microcompact 成本极低**：清理旧工具结果，不调用 API，适合频繁执行。
-4. **Context Collapse 在 Autocompact 之前**：折叠可能使 Token 使用量降到 Autocompact 阈值以下，从而阻止不必要的全量压缩——保留了更细粒度的上下文。
+4. **Context Collapse 在 Autocompact 之前**：Context Collapse（上下文折叠）是一种投影式压缩——创建消息的只读折叠视图，不修改原始数据（详见 Level 4）。折叠可能使 Token 使用量降到 Autocompact 阈值以下，从而阻止不必要的全量压缩——保留了更细粒度的上下文。
 5. **Autocompact 作为最后手段**：需要 fork 一个子 Agent 调用 API 生成摘要，成本最高，且不可逆（原始消息被摘要替换）。
 
 ### 各级压缩详解
@@ -425,7 +450,7 @@ if (feature('CONTEXT_COLLAPSE') && contextCollapse) {
 
 可以用数据库的 View 来类比：底层表（消息数组）的数据不变，但查询时（发送 API 请求时）看到的是一个过滤/转换后的视图。摘要存储在独立的 collapse store 中，`projectView()` 在每次循环入口将折叠视图叠加到原始消息之上。
 
-Context Collapse 在约 **90%** 上下文利用率时提交折叠，而 Autocompact 在约 **87%** 触发（因为需要预留压缩输出空间）。两者同时运行会竞争——Autocompact 可能销毁 Collapse 正要保存的细粒度上下文。因此，**当 Context Collapse 启用且活跃时，Autocompact 被抑制**。
+Context Collapse 在约 **90%** 上下文利用率时提交折叠，而 Autocompact 的触发阈值略低于此（具体取决于 `reservedTokensForSummary`，约 83%~90%，详见 Level 5 阈值计算）。两者同时运行会竞争——源码注释明确指出 *"Autocompact firing at effective-13k (~93% of effective) sits right between collapse's commit-start (90%) and blocking (95%), so it would race collapse and usually win, nuking granular context that collapse was about to save"*。因此，**当 Context Collapse 启用且活跃时，Autocompact 被抑制**。
 
 #### Level 5: Autocompact
 
@@ -449,8 +474,8 @@ isAutoCompactEnabled()
 
 // 4. 非 Context-collapse 模式
 // 当 CONTEXT_COLLAPSE 启用且活跃时，autocompact 被抑制
-// 原因：collapse 在 ~90% 提交，autocompact 在 ~87% 触发——
-// 两者同时运行会竞争，autocompact 可能销毁 collapse 正要保存的细粒度上下文
+// 原因：collapse 在 ~90% 提交，autocompact 在 ~93%（相对 effectiveWindow）触发——
+// 两者阈值接近会竞争，autocompact 可能销毁 collapse 正要保存的细粒度上下文
 
 // 5. Token 阈值（含 snipTokensFreed 修正）
 tokenCountWithEstimation(messages) - snipTokensFreed >= getAutoCompactThreshold(model)
@@ -459,12 +484,24 @@ tokenCountWithEstimation(messages) - snipTokensFreed >= getAutoCompactThreshold(
 **阈值计算**：
 
 ```
-contextWindow = getContextWindowForModel(model)        // 如 200,000
-effectiveWindow = contextWindow - maxOutputTokens      // 如 200,000 - 16,000 = 184,000
-autoCompactThreshold = effectiveWindow - 13,000        // 如 184,000 - 13,000 = 171,000
+// 源码：getEffectiveContextWindowSize()
+reservedTokensForSummary = Math.min(getMaxOutputTokensForModel(model), MAX_OUTPUT_TOKENS_FOR_SUMMARY)
+                         // MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20,000（基于 p99.99 摘要输出 17,387 tokens）
+                         // getMaxOutputTokensForModel 受 slot-cap feature flag 影响（开启时为 8K）
+effectiveWindow = contextWindow - reservedTokensForSummary
+
+// 源码：getAutoCompactThreshold()
+autoCompactThreshold = effectiveWindow - AUTOCOMPACT_BUFFER_TOKENS  // AUTOCOMPACT_BUFFER_TOKENS = 13,000
 ```
 
-对于 200K 上下文窗口 + 16K 最大输出的模型，阈值约在 **171,000 Token**（约 85.5% 利用率）。可通过 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` 环境变量按百分比覆盖。
+以 200K 上下文窗口为例，实际阈值取决于 `reservedTokensForSummary`：
+
+| 场景 | reservedTokensForSummary | effectiveWindow | autoCompactThreshold | 相对总窗口 |
+|------|-------------------------|-----------------|---------------------|-----------|
+| slot-cap 开启（max_output=8K） | min(8K, 20K) = **8K** | 192,000 | **179,000** | ~89.5% |
+| slot-cap 关闭（max_output≥20K） | min(≥20K, 20K) = **20K** | 180,000 | **167,000** | ~83.5% |
+
+可通过 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` 环境变量按百分比覆盖。
 
 **压缩提示词的设计**（`src/services/compact/prompt.ts`）：
 
@@ -707,7 +744,7 @@ IMPORTANT: this context may or may not be relevant to your tasks.
 })
 ```
 
-**2. 附件消息**：记忆预取结果、延迟工具列表（Tool Search 的发现结果）、技能列表、Agent 定义列表等，都作为附件消息注入，内容包裹在 `<system-reminder>` 中。
+**2. 附件消息**：记忆预取结果（详见 [3.8 记忆预取](#38-记忆预取)）、延迟工具列表（Tool Search 的发现结果）、技能列表、Agent 定义列表等，都作为附件消息注入，内容包裹在 `<system-reminder>` 中。
 
 **3. 工具结果中的提醒**：某些工具在返回结果时附带系统提醒。例如：
 - 文件读取发现文件为空时：`Warning: file exists but is empty`
@@ -763,14 +800,14 @@ tryReactiveCompact() {
 }
 ```
 
-在正常运行中，autocompact 应该在 ~87% 利用率时主动触发，防止 PTL 错误发生。反应式压缩只在以下情况下需要：
+在正常运行中，autocompact 应该在上下文利用率达到阈值时主动触发（约 83%~90% 总窗口，取决于模型的 `reservedTokensForSummary`），防止 PTL 错误发生。反应式压缩只在以下情况下需要：
 - Autocompact 被禁用或跳过
 - 单次工具结果异常大，一步跳过了 autocompact 阈值
-- Context Collapse 排水释放的 Token 不够
+- [Context Collapse](#level-4-context-collapse) 排水释放的 Token 不够
 
 > **设计决策：压缩阈值是怎么确定的？**
 >
-> 自动压缩的触发公式是 `tokens >= effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS`，其中 `AUTOCOMPACT_BUFFER_TOKENS = 13,000`（`src/services/compact/autoCompact.ts`）。对于 200K 上下文窗口，这意味着在约 **93.5%** 利用率时触发。为什么是 13K？因为压缩本身需要预留输出空间——`MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20,000`（基于 p99.99 的压缩摘要输出为 17,387 tokens）。13K buffer 确保触发压缩时还有足够空间完成当前工具执行和生成摘要。与此相关的还有 `WARNING_THRESHOLD_BUFFER_TOKENS = 20,000`——在压缩前 7K tokens 就开始向用户显示警告。
+> 自动压缩的触发公式是 `tokens >= effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS`，其中 `AUTOCOMPACT_BUFFER_TOKENS = 13,000`（`src/services/compact/autoCompact.ts`）。`effectiveContextWindow` 本身 = `contextWindow - Math.min(getMaxOutputTokensForModel(model), 20_000)`，即扣除了压缩摘要的输出预留（`MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20,000`，基于 p99.99 的压缩摘要输出为 17,387 tokens）。对于 200K 上下文窗口，阈值相对 effectiveWindow 约 **92.8%**（167K/180K），相对总窗口约 **83.5%~89.5%**（取决于 `reservedTokensForSummary` 是 20K 还是 8K）。13K buffer 确保触发压缩时还有足够空间完成当前工具执行和生成摘要。与此相关的还有 `WARNING_THRESHOLD_BUFFER_TOKENS = 20,000`——在压缩阈值前 7K tokens 就开始向用户显示警告。
 
 > **设计决策：为什么 max_output_tokens 默认只用 8K 而不是 32K？**
 >
