@@ -64,7 +64,7 @@ sequenceDiagram
 有两种方式进入 Plan 模式，但最终都汇聚到同一个状态转换函数：
 
 ```mermaid
-graph LR
+graph TB
     A["/plan 命令<br/>（用户主动）"] --> C[handlePlanModeTransition]
     B["EnterPlanMode 工具<br/>（模型主动）"] --> C
     C --> D["prepareContextForPlanMode()"]

@@ -7,7 +7,7 @@
 Shell 脚本自动化终端任务，技能自动化 AI 任务。一个技能本质上是：**提示词模板 + 元数据 + 执行上下文**。
 
 ```mermaid
-graph LR
+graph TB
     Skill["技能 = Markdown 文件"]
     FM["Frontmatter 元数据<br/>name, description<br/>whenToUse, allowedTools<br/>context, model, hooks"]
     Content["提示词内容<br/>$ARGUMENTS 占位符<br/>!`shell` 内联命令<br/>${ENV_VAR} 环境变量"]

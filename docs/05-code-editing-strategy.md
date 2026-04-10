@@ -770,7 +770,7 @@ Gutter 列使用 `<NoSelect>` 包裹，这样用户在终端中选择复制 diff
 编辑工具在工具系统中的位置：
 
 ```mermaid
-graph LR
+graph TB
     Model[模型决策] --> Choice{选择工具}
     Choice -->|修改已有文件| Edit[FileEditTool<br/>search-and-replace<br/>isReadOnly=false<br/>isDestructive=false]
     Choice -->|创建新文件| Write[FileWriteTool<br/>全文件写入<br/>isReadOnly=false<br/>isDestructive=true]
